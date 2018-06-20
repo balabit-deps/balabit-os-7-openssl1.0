@@ -1,0 +1,507 @@
+---
+ crypto/aes/Makefile             |    2 
+ crypto/aes/asm/aes-s390x.pl     |   14 ++--
+ crypto/modes/Makefile           |    2 
+ crypto/modes/asm/ghash-s390x.pl |   20 +++---
+ crypto/s390x_arch.h             |   82 +++++++++++++++++++++++++++
+ crypto/s390xcap.c               |   27 +++++++--
+ crypto/s390xcpuid.S             |  118 +++++++++++++++++++++++++++++-----------
+ crypto/sha/Makefile             |    4 +
+ crypto/sha/asm/sha1-s390x.pl    |    8 +-
+ crypto/sha/asm/sha512-s390x.pl  |    8 +-
+ 10 files changed, 221 insertions(+), 64 deletions(-)
+
+--- a/crypto/aes/Makefile
++++ b/crypto/aes/Makefile
+@@ -92,6 +92,8 @@ aesv8-armx.S:	asm/aesv8-armx.pl
+ 	$(PERL) asm/aesv8-armx.pl $(PERLASM_SCHEME) $@
+ aesv8-armx.o:	aesv8-armx.S
+ 
++aes-s390x.o:	aes-s390x.S
++
+ # GNU make "catch all"
+ aes-%.S:	asm/aes-%.pl;	$(PERL) $< $(PERLASM_SCHEME) > $@
+ aes-armv4.o:	aes-armv4.S
+--- a/crypto/aes/asm/aes-s390x.pl
++++ b/crypto/aes/asm/aes-s390x.pl
+@@ -122,6 +122,8 @@ sub _data_word()
+ }
+ 
+ $code=<<___;
++#include "s390x_arch.h"
++
+ .text
+ 
+ .type	AES_Te,\@object
+@@ -814,13 +816,10 @@ $code.=<<___ if (!$softonly);
+ 	ar	%r5,%r0
+ 
+ 	larl	%r1,OPENSSL_s390xcap_P
+-	lg	%r0,0(%r1)
+-	tmhl	%r0,0x4000	# check for message-security assist
+-	jz	.Lekey_internal
+-
+ 	llihh	%r0,0x8000
+ 	srlg	%r0,%r0,0(%r5)
+-	ng	%r0,48(%r1)	# check kmc capability vector
++	ng	%r0,S390X_KM(%r1)  # check availability of both km...
++	ng	%r0,S390X_KMC(%r1) # ...and kmc support for given key length
+ 	jz	.Lekey_internal
+ 
+ 	lmg	%r0,%r1,0($inp)	# just copy 128 bits...
+@@ -1443,7 +1442,7 @@ $code.=<<___ if (0);	######### kmctr cod
+ 	larl	%r1,OPENSSL_s390xcap_P
+ 	llihh	%r0,0x8000	# check if kmctr supports the function code
+ 	srlg	%r0,%r0,0($s0)
+-	ng	%r0,64(%r1)	# check kmctr capability vector
++	ng	%r0,S390X_KMCTR(%r1)	# check kmctr capability vector
+ 	lgr	%r0,$s0
+ 	lgr	%r1,$s1
+ 	jz	.Lctr32_km_loop
+@@ -1593,7 +1592,7 @@ $code.=<<___ if(1);
+ 	larl	%r1,OPENSSL_s390xcap_P
+ 	llihh	%r0,0x8000
+ 	srlg	%r0,%r0,32($s1)		# check for 32+function code
+-	ng	%r0,32(%r1)		# check km capability vector
++	ng	%r0,S390X_KM(%r1)	# check km capability vector
+ 	lgr	%r0,$s0			# restore the function code
+ 	la	%r1,0($key1)		# restore $key1
+ 	jz	.Lxts_km_vanilla
+@@ -2220,7 +2219,6 @@ ___
+ }
+ $code.=<<___;
+ .string	"AES for s390x, CRYPTOGAMS by <appro\@openssl.org>"
+-.comm	OPENSSL_s390xcap_P,80,8
+ ___
+ 
+ $code =~ s/\`([^\`]*)\`/eval $1/gem;
+--- a/crypto/modes/Makefile
++++ b/crypto/modes/Makefile
+@@ -71,6 +71,8 @@ ghash-%.S:	asm/ghash-%.pl;	$(PERL) $< $(
+ ghash-armv4.o:	ghash-armv4.S
+ ghashv8-armx.o:	ghashv8-armx.S
+ 
++ghash-s390x.o:	ghash-s390x.S
++
+ files:
+ 	$(PERL) $(TOP)/util/files.pl Makefile >> $(TOP)/MINFO
+ 
+--- a/crypto/modes/asm/ghash-s390x.pl
++++ b/crypto/modes/asm/ghash-s390x.pl
+@@ -73,6 +73,8 @@ $rem_4bit="%r14";
+ $sp="%r15";
+ 
+ $code.=<<___;
++#include "s390x_arch.h"
++
+ .text
+ 
+ .globl	gcm_gmult_4bit
+@@ -85,12 +87,13 @@ $code.=<<___ if(!$softonly && 0);	# hard
+ 	tmhl	%r0,0x4000	# check for message-security-assist
+ 	jz	.Lsoft_gmult
+ 	lghi	%r0,0
+-	lg	%r1,24(%r1)	# load second word of kimd capabilities vector
++	lg	%r1,S390X_KIMD+8(%r1)	# load second word of kimd capabilities
++					#  vector
+ 	tmhh	%r1,0x4000	# check for function 65
+ 	jz	.Lsoft_gmult
+ 	stg	%r0,16($sp)	# arrange 16 bytes of zero input
+ 	stg	%r0,24($sp)
+-	lghi	%r0,65		# function 65
++	lghi	%r0,S390X_GHASH	# function 65
+ 	la	%r1,0($Xi)	# H lies right after Xi in gcm128_context
+ 	la	$inp,16($sp)
+ 	lghi	$len,16
+@@ -119,16 +122,11 @@ gcm_ghash_4bit:
+ ___
+ $code.=<<___ if(!$softonly);
+ 	larl	%r1,OPENSSL_s390xcap_P
+-	lg	%r0,0(%r1)
+-	tmhl	%r0,0x4000	# check for message-security-assist
+-	jz	.Lsoft_ghash
+-	lghi	%r0,0
+-	la	%r1,16($sp)
+-	.long	0xb93e0004	# kimd %r0,%r4
+-	lg	%r1,24($sp)
+-	tmhh	%r1,0x4000	# check for function 65
++	lg	%r0,S390X_KIMD+8(%r1)	# load second word of kimd capabilities
++					#  vector
++	tmhh	%r0,0x4000	# check for function 65
+ 	jz	.Lsoft_ghash
+-	lghi	%r0,65		# function 65
++	lghi	%r0,S390X_GHASH	# function 65
+ 	la	%r1,0($Xi)	# H lies right after Xi in gcm128_context
+ 	.long	0xb93e0004	# kimd %r0,$inp
+ 	brc	1,.-4		# pay attention to "partial completion"
+--- /dev/null
++++ b/crypto/s390x_arch.h
+@@ -0,0 +1,82 @@
++/*
++ * Copyright 2017 The OpenSSL Project Authors. All Rights Reserved.
++ *
++ * Licensed under the OpenSSL license (the "License").  You may not use
++ * this file except in compliance with the License.  You can obtain a copy
++ * in the file LICENSE in the source distribution or at
++ * https://www.openssl.org/source/license.html
++ */
++
++#ifndef S390X_ARCH_H
++# define S390X_ARCH_H
++
++# ifndef __ASSEMBLER__
++
++/*
++ * The field elements of OPENSSL_s390xcap_P are the 64-bit words returned by
++ * the STFLE instruction followed by the 64-bit word pairs returned by
++ * instructions' QUERY functions. If STFLE returns fewer data or an instruction
++ * is not supported, the corresponding field elements are zero.
++ */
++struct OPENSSL_s390xcap_st {
++    unsigned long long stfle[4];
++    unsigned long long kimd[2];
++    unsigned long long klmd[2];
++    unsigned long long km[2];
++    unsigned long long kmc[2];
++    unsigned long long kmac[2];
++    unsigned long long kmctr[2];
++    unsigned long long kmo[2];
++    unsigned long long kmf[2];
++    unsigned long long prno[2];
++    unsigned long long kma[2];
++};
++
++extern struct OPENSSL_s390xcap_st OPENSSL_s390xcap_P;
++
++/* convert facility bit number or function code to bit mask */
++#  define S390X_CAPBIT(i)	(1ULL << (63 - (i) % 64))
++
++# endif
++
++/* OPENSSL_s390xcap_P offsets [bytes] */
++# define S390X_STFLE		0x00
++# define S390X_KIMD		0x20
++# define S390X_KLMD		0x30
++# define S390X_KM		0x40
++# define S390X_KMC		0x50
++# define S390X_KMAC		0x60
++# define S390X_KMCTR		0x70
++# define S390X_KMO		0x80
++# define S390X_KMF		0x90
++# define S390X_PRNO		0xa0
++# define S390X_KMA		0xb0
++
++/* Facility Bit Numbers */
++# define S390X_VX		129
++# define S390X_VXD		134
++# define S390X_VXE		135
++
++/* Function Codes */
++
++/* all instructions */
++# define S390X_QUERY		0
++
++/* kimd/klmd */
++# define S390X_SHA3_224		32
++# define S390X_SHA3_256		33
++# define S390X_SHA3_384		34
++# define S390X_SHA3_512		35
++# define S390X_SHAKE_128	36
++# define S390X_SHAKE_256	37
++# define S390X_GHASH		65
++
++/* km/kmc/kmac/kmctr/kmo/kmf/kma */
++# define S390X_AES_128		18
++# define S390X_AES_192		19
++# define S390X_AES_256		20
++
++/* prno */
++# define S390X_TRNG		114
++
++#endif
+--- a/crypto/s390xcap.c
++++ b/crypto/s390xcap.c
+@@ -4,8 +4,7 @@
+ #include <setjmp.h>
+ #include <signal.h>
+ #include "cryptlib.h"
+-
+-extern unsigned long OPENSSL_s390xcap_P[];
++#include "s390x_arch.h"
+ 
+ static sigjmp_buf ill_jmp;
+ static void ill_handler(int sig)
+@@ -13,30 +12,48 @@ static void ill_handler(int sig)
+     siglongjmp(ill_jmp, sig);
+ }
+ 
+-unsigned long OPENSSL_s390x_facilities(void);
++void OPENSSL_s390x_facilities(void);
++void OPENSSL_vx_probe(void);
++
++struct OPENSSL_s390xcap_st OPENSSL_s390xcap_P;
+ 
+ void OPENSSL_cpuid_setup(void)
+ {
+     sigset_t oset;
+     struct sigaction ill_act, oact;
+ 
+-    if (OPENSSL_s390xcap_P[0])
++    if (OPENSSL_s390xcap_P.stfle[0])
+         return;
+ 
+-    OPENSSL_s390xcap_P[0] = 1UL << (8 * sizeof(unsigned long) - 1);
++    /* set a bit that will not be tested later */
++    OPENSSL_s390xcap_P.stfle[0] |= S390X_CAPBIT(0);
+ 
+     memset(&ill_act, 0, sizeof(ill_act));
+     ill_act.sa_handler = ill_handler;
+     sigfillset(&ill_act.sa_mask);
+     sigdelset(&ill_act.sa_mask, SIGILL);
++    sigdelset(&ill_act.sa_mask, SIGFPE);
+     sigdelset(&ill_act.sa_mask, SIGTRAP);
+     sigprocmask(SIG_SETMASK, &ill_act.sa_mask, &oset);
+     sigaction(SIGILL, &ill_act, &oact);
++    sigaction(SIGFPE, &ill_act, &oact);
+ 
+     /* protection against missing store-facility-list-extended */
+     if (sigsetjmp(ill_jmp, 1) == 0)
+         OPENSSL_s390x_facilities();
+ 
++    /* protection against disabled vector facility */
++    if ((OPENSSL_s390xcap_P.stfle[2] & S390X_CAPBIT(S390X_VX))
++        && (sigsetjmp(ill_jmp, 1) == 0)) {
++        OPENSSL_vx_probe();
++    } else {
++        OPENSSL_s390xcap_P.stfle[2] &= ~(S390X_CAPBIT(S390X_VX)
++                                         | S390X_CAPBIT(S390X_VXD)
++                                         | S390X_CAPBIT(S390X_VXE));
++    }
++
++    sigaction(SIGFPE, &oact, NULL);
++
+     sigaction(SIGILL, &oact, NULL);
+     sigprocmask(SIG_SETMASK, &oset, NULL);
+ }
+--- a/crypto/s390xcpuid.S
++++ b/crypto/s390xcpuid.S
+@@ -1,48 +1,99 @@
+ .text
+ 
++#include "s390x_arch.h"
++
+ .globl	OPENSSL_s390x_facilities
+ .type	OPENSSL_s390x_facilities,@function
+ .align	16
+ OPENSSL_s390x_facilities:
+ 	lghi	%r0,0
+ 	larl	%r4,OPENSSL_s390xcap_P
+-	stg	%r0,8(%r4)	# wipe capability vectors
+-	stg	%r0,16(%r4)
+-	stg	%r0,24(%r4)
+-	stg	%r0,32(%r4)
+-	stg	%r0,40(%r4)
+-	stg	%r0,48(%r4)
+-	stg	%r0,56(%r4)
+-	stg	%r0,64(%r4)
+-	stg	%r0,72(%r4)
+ 
+-	.long	0xb2b04000	# stfle	0(%r4)
++	stg	%r0,S390X_STFLE+8(%r4)	# wipe capability vectors
++	stg	%r0,S390X_STFLE+16(%r4)
++	stg	%r0,S390X_STFLE+24(%r4)
++	stg	%r0,S390X_KIMD(%r4)
++	stg	%r0,S390X_KIMD+8(%r4)
++	stg	%r0,S390X_KLMD(%r4)
++	stg	%r0,S390X_KLMD+8(%r4)
++	stg	%r0,S390X_KM(%r4)
++	stg	%r0,S390X_KM+8(%r4)
++	stg	%r0,S390X_KMC(%r4)
++	stg	%r0,S390X_KMC+8(%r4)
++	stg	%r0,S390X_KMAC(%r4)
++	stg	%r0,S390X_KMAC+8(%r4)
++	stg	%r0,S390X_KMCTR(%r4)
++	stg	%r0,S390X_KMCTR+8(%r4)
++	stg	%r0,S390X_KMO(%r4)
++	stg	%r0,S390X_KMO+8(%r4)
++	stg	%r0,S390X_KMF(%r4)
++	stg	%r0,S390X_KMF+8(%r4)
++	stg	%r0,S390X_PRNO(%r4)
++	stg	%r0,S390X_PRNO+8(%r4)
++	stg	%r0,S390X_KMA(%r4)
++	stg	%r0,S390X_KMA+8(%r4)
++
++	.long	0xb2b04000		# stfle	0(%r4)
+ 	brc	8,.Ldone
+ 	lghi	%r0,1
+-	.long	0xb2b04000	# stfle 0(%r4)
++	.long	0xb2b04000		# stfle 0(%r4)
++	brc	8,.Ldone
++	lghi	%r0,2
++	.long	0xb2b04000		# stfle 0(%r4)
+ .Ldone:
+-	lmg	%r2,%r3,0(%r4)
+-	tmhl	%r2,0x4000	# check for message-security-assist
++	lmg	%r2,%r3,S390X_STFLE(%r4)
++	tmhl	%r2,0x4000		# check for message-security-assist
++ 	jz	.Lret
++
++	lghi	%r0,S390X_QUERY		# query kimd capabilities
++	la	%r1,S390X_KIMD(%r4)
++	.long	0xb93e0002		# kimd %r0,%r2
++
++	lghi	%r0,S390X_QUERY		# query klmd capabilities
++	la	%r1,S390X_KLMD(%r4)
++	.long	0xb93f0002		# klmd %r0,%r2
++
++	lghi	%r0,S390X_QUERY		# query km capability vector
++	la	%r1,S390X_KM(%r4)
++	.long	0xb92e0042		# km %r4,%r2
++
++	lghi	%r0,S390X_QUERY		# query kmc capability vector
++	la	%r1,S390X_KMC(%r4)
++	.long	0xb92f0042		# kmc %r4,%r2
++
++	lghi	%r0,S390X_QUERY		# query kmac capability vector
++	la	%r1,S390X_KMAC(%r4)
++	.long	0xb91e0042		# kmac %r4,%r2
++
++	tmhh	%r3,0x0004		# check for message-security-assist-4
++ 	jz	.Lret
++
++	lghi	%r0,S390X_QUERY		# query kmctr capability vector
++	la	%r1,S390X_KMCTR(%r4)
++	.long	0xb92d2042		# kmctr %r4,%r2,%r2
++
++	lghi	%r0,S390X_QUERY		# query kmo capability vector
++	la	%r1,S390X_KMO(%r4)
++	.long	0xb92b0042		# kmo %r4,%r2
++
++	lghi	%r0,S390X_QUERY		# query kmf capability vector
++	la	%r1,S390X_KMF(%r4)
++	.long	0xb92a0042		# kmf %r4,%r2
++
++	tml	%r2,0x40		# check for message-security-assist-5
+ 	jz	.Lret
+ 
+-	lghi	%r0,0		# query kimd capabilities
+-	la	%r1,16(%r4)
+-	.long	0xb93e0002	# kimd %r0,%r2
+-
+-	lghi	%r0,0		# query km capability vector
+-	la	%r1,32(%r4)
+-	.long	0xb92e0042	# km %r4,%r2
+-
+-	lghi	%r0,0		# query kmc capability vector
+-	la	%r1,48(%r4)
+-	.long	0xb92f0042	# kmc %r4,%r2
++	lghi	%r0,S390X_QUERY		# query prno capability vector
++	la	%r1,S390X_PRNO(%r4)
++	.long	0xb93c0042		# prno %r4,%r2
+ 
+-	tmhh	%r3,0x0004	# check for message-security-assist-4
++	lg	%r2,S390X_STFLE+16(%r4)
++	tmhl	%r2,0x2000		# check for message-security-assist-8
+ 	jz	.Lret
+ 
+-	lghi	%r0,0		# query kmctr capability vector
+-	la	%r1,64(%r4)
+-	.long	0xb92d2042	# kmctr %r4,%r2,%r2
++	lghi	%r0,S390X_QUERY		# query kma capability vector
++	la	%r1,S390X_KMA(%r4)
++	.long	0xb9294022		# kma %r2,%r4,%r2
+ 
+ .Lret:
+ 	br	%r14
+@@ -125,7 +176,14 @@ OPENSSL_cleanse:
+ 	br	%r14
+ .size	OPENSSL_cleanse,.-OPENSSL_cleanse
+ 
++.globl	OPENSSL_vx_probe
++.type	OPENSSL_vx_probe,@function
++.align	16
++OPENSSL_vx_probe:
++	.word	0xe700,0x0000,0x0044	# vzero %v0
++	br	%r14
++.size	OPENSSL_vx_probe,.-OPENSSL_vx_probe
++
++
+ .section	.init
+ 	brasl	%r14,OPENSSL_cpuid_setup
+-
+-.comm	OPENSSL_s390xcap_P,80,8
+--- a/crypto/sha/Makefile
++++ b/crypto/sha/Makefile
+@@ -100,6 +100,10 @@ sha1-armv8.o:		sha1-armv8.S
+ sha256-armv8.o:		sha256-armv8.S
+ sha512-armv8.o:		sha512-armv8.S
+ 
++sha1-s390x.o:		sha1-s390x.S
++sha256-s390x.o:		sha256-s390x.S
++sha512-s390x.o:		sha512-s390x.S
++
+ files:
+ 	$(PERL) $(TOP)/util/files.pl Makefile >> $(TOP)/MINFO
+ 
+--- a/crypto/sha/asm/sha1-s390x.pl
++++ b/crypto/sha/asm/sha1-s390x.pl
+@@ -152,6 +152,8 @@ ___
+ }
+ 
+ $code.=<<___;
++#include "s390x_arch.h"
++
+ .text
+ .align	64
+ .type	Ktable,\@object
+@@ -164,10 +166,7 @@ sha1_block_data_order:
+ ___
+ $code.=<<___ if ($kimdfunc);
+ 	larl	%r1,OPENSSL_s390xcap_P
+-	lg	%r0,0(%r1)
+-	tmhl	%r0,0x4000	# check for message-security assist
+-	jz	.Lsoftware
+-	lg	%r0,16(%r1)	# check kimd capabilities
++	lg	%r0,S390X_KIMD(%r1)	# check kimd capabilities
+ 	tmhh	%r0,`0x8000>>$kimdfunc`
+ 	jz	.Lsoftware
+ 	lghi	%r0,$kimdfunc
+@@ -234,7 +233,6 @@ $code.=<<___;
+ 	br	%r14
+ .size	sha1_block_data_order,.-sha1_block_data_order
+ .string	"SHA1 block transform for s390x, CRYPTOGAMS by <appro\@openssl.org>"
+-.comm	OPENSSL_s390xcap_P,80,8
+ ___
+ 
+ $code =~ s/\`([^\`]*)\`/eval $1/gem;
+--- a/crypto/sha/asm/sha512-s390x.pl
++++ b/crypto/sha/asm/sha512-s390x.pl
+@@ -163,6 +163,8 @@ ___
+ }
+ 
+ $code.=<<___;
++#include "s390x_arch.h"
++
+ .text
+ .align	64
+ .type	$Table,\@object
+@@ -237,10 +239,7 @@ $Func:
+ ___
+ $code.=<<___ if ($kimdfunc);
+ 	larl	%r1,OPENSSL_s390xcap_P
+-	lg	%r0,0(%r1)
+-	tmhl	%r0,0x4000	# check for message-security assist
+-	jz	.Lsoftware
+-	lg	%r0,16(%r1)	# check kimd capabilities
++	lg	%r0,S390X_KIMD(%r1)	# check kimd capabilities
+ 	tmhh	%r0,`0x8000>>$kimdfunc`
+ 	jz	.Lsoftware
+ 	lghi	%r0,$kimdfunc
+@@ -308,7 +307,6 @@ $code.=<<___;
+ 	br	%r14
+ .size	$Func,.-$Func
+ .string	"SHA${label} block transform for s390x, CRYPTOGAMS by <appro\@openssl.org>"
+-.comm	OPENSSL_s390xcap_P,80,8
+ ___
+ 
+ $code =~ s/\`([^\`]*)\`/eval $1/gem;
