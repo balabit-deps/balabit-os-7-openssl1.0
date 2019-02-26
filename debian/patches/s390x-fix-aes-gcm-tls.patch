@@ -1,0 +1,18 @@
+Description: fix typo in backported s390x hw acceleration patch.
+Bug-Ubuntu: https://bugs.launchpad.net/ubuntu/+source/openssl/+bug/1775018
+
+---
+ crypto/evp/e_aes.c |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+--- a/crypto/evp/e_aes.c
++++ b/crypto/evp/e_aes.c
+@@ -1362,7 +1362,7 @@ static int s390x_aes_gcm_tls_cipher(EVP_
+                                     const unsigned char *in, size_t len)
+ {
+     S390X_AES_GCM_CTX *gctx = EVP_C_DATA(S390X_AES_GCM_CTX, ctx);
+-    const unsigned char *buf = ctx->iv;
++    const unsigned char *buf = ctx->buf;
+     const int enc = ctx->encrypt;
+     int rv = -1;
+ 

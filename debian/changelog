@@ -1,3 +1,14 @@
+openssl1.0 (1.0.2n-1ubuntu5.3) bionic-security; urgency=medium
+
+  * SECURITY UPDATE: 0-byte record padding oracle
+    - debian/patches/CVE-2019-1559.patch: go into the error state if a
+      fatal alert is sent or received in ssl/d1_pkt.c, ssl/s3_pkt.c.
+    - CVE-2019-1559
+  * debian/patches/s390x-fix-aes-gcm-tls.patch: fix typo in backported
+    s390x hw acceleration patch. (LP: #1775018)
+
+ -- Marc Deslauriers <marc.deslauriers@ubuntu.com>  Tue, 26 Feb 2019 14:46:16 -0500
+
 openssl1.0 (1.0.2n-1ubuntu5.2) bionic-security; urgency=medium
 
   * SECURITY UPDATE: PortSmash side channel attack
