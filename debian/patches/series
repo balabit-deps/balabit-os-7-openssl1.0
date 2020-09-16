@@ -33,3 +33,7 @@ CVE-2018-0734-3.patch
 CVE-2018-5407.patch
 CVE-2019-1559.patch
 s390x-fix-aes-gcm-tls.patch
+CVE-2020-1968.patch
+CVE-2019-1547.patch
+CVE-2019-1551.patch
+CVE-2019-1563.patch
