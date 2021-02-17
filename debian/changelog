@@ -1,3 +1,21 @@
+openssl1.0 (1.0.2n-1ubuntu5.6) bionic-security; urgency=medium
+
+  * SECURITY UPDATE: Integer overflow in CipherUpdate
+    - debian/patches/CVE-2021-23840-pre1.patch: add new EVP error codes in
+      crypto/evp/evp_err.c, crypto/evp/evp.h.
+    - debian/patches/CVE-2021-23840-pre2.patch: add a new EVP error code in
+      crypto/evp/evp_err.c, crypto/evp/evp.h.
+    - debian/patches/CVE-2021-23840.patch: don't overflow the output length
+      in EVP_CipherUpdate calls in crypto/evp/evp_enc.c,
+      crypto/evp/evp_err.c, crypto/evp/evp.h.
+    - CVE-2021-23840
+  * SECURITY UPDATE: Null pointer deref in X509_issuer_and_serial_hash()
+    - debian/patches/CVE-2021-23841.patch: fix Null pointer deref in
+      crypto/x509/x509_cmp.c.
+    - CVE-2021-23841
+
+ -- Marc Deslauriers <marc.deslauriers@ubuntu.com>  Wed, 17 Feb 2021 10:33:20 -0500
+
 openssl1.0 (1.0.2n-1ubuntu5.5) bionic-security; urgency=medium
 
   * SECURITY UPDATE: EDIPARTYNAME NULL pointer de-ref
